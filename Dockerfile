@@ -1,22 +1,16 @@
 # syntax=docker/dockerfile:1
 
-# ─── Зависимости ──────────────────────────────────────────────────────────
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 
-# Движку Prisma в alpine нужен openssl.
 RUN apk add --no-cache openssl
 
 COPY package.json package-lock.json ./
-# Схема должна лежать до npm ci: postinstall запускает prisma generate.
 COPY prisma ./prisma
 
-# prisma CLI намеренно в dependencies, а не в dev: этим же образом деплой
-# накатывает миграции командой `prisma migrate deploy`.
 RUN npm ci --omit=dev
 
-# ─── Рантайм ──────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 
 RUN apk add --no-cache openssl

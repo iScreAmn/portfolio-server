@@ -1,8 +1,3 @@
-# Лежит на сервере в /opt/portfolio/docker-compose.yml рядом с .env.
-#
-# Ничего не собирается на месте: все образы приезжают готовыми из GHCR,
-# сборкой занимается GitHub Actions.
-
 name: portfolio
 
 services:
@@ -15,8 +10,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Портов наружу нет специально: база доступна только внутри сети
-    # internal. Для psql с хоста — `docker compose exec db psql ...`.
     networks:
       - internal
     healthcheck:
@@ -27,7 +20,7 @@ services:
       start_period: 20s
 
   api:
-    image: ghcr.io/iscreamn/react-portfolio-server:latest
+    image: ghcr.io/iscreamn/portfolio-server:latest
     restart: unless-stopped
     env_file: .env
     environment:
@@ -38,12 +31,11 @@ services:
         condition: service_healthy
     networks:
       - internal
-    # Наружу не публикуется: до api ходит только nginx внутри сети.
     expose:
       - '5050'
 
   web:
-    image: ghcr.io/iscreamn/react-portfolio:latest
+    image: ghcr.io/iscreamn/portfolio:latest
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -57,15 +49,12 @@ services:
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
-    # Единственный сервис с портами наружу.
     ports:
       - '80:80'
       - '443:443'
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      # Сертификаты выпускает certbot на самом хосте.
       - /etc/letsencrypt:/etc/letsencrypt:ro
-      # Сюда certbot кладёт файлы для http-01 проверки при продлении.
       - ./certbot-www:/var/www/certbot:ro
     depends_on:
       - web
