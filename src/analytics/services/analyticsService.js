@@ -1,197 +1,81 @@
-import * as analyticsRepo from '../repositories/analyticsRepository.js';
+import * as repo from '../repositories/analyticsRepository.js';
+import { normalizeBatch } from '../validators/analyticsValidator.js';
+import { lookupGeo } from '../utils/geo.js';
 
-const RANGE_MAP = {
-  '7d': 7 * 24 * 60 * 60 * 1000,
-  '30d': 30 * 24 * 60 * 60 * 1000,
-  '90d': 90 * 24 * 60 * 60 * 1000,
-};
-const analyticsDisabled = process.env.ANALYTICS_DISABLED === '1';
+/** Аварийный выключатель: приём событий отвечает 202, но в БД ничего не пишет. */
+const isDisabled = () => process.env.ANALYTICS_DISABLED === '1';
 
-export const trackEvents = async (events) => {
-  if (!Array.isArray(events) || events.length === 0) {
-    throw new Error('Events must be a non-empty array');
-  }
-  if (analyticsDisabled) {
-    return { success: true, count: 0 };
-  }
+const DEFAULT_ALLOWED_HOSTS = ['djcode.ge', 'www.djcode.ge'];
 
-  const count = await analyticsRepo.insertEvents(events);
-  return { success: true, count };
+const getAllowedHosts = () => {
+  const fromEnv = String(process.env.ANALYTICS_ALLOWED_HOSTS || '').trim();
+  const hosts = fromEnv
+    ? fromEnv.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+    : DEFAULT_ALLOWED_HOSTS;
+  return new Set(hosts);
 };
 
-export const getStats = async (range = '7d') => {
-  if (analyticsDisabled) {
-    return {
-      totalEvents: 0,
-      pageViews: 0,
-      uniqueUsers: 0,
-      avgSessionDuration: '0m',
-      topPages: [],
-      topActions: [],
-      hourlyActivity: [],
-    };
-  }
-  const rangeMs = RANGE_MAP[range] || RANGE_MAP['7d'];
-  const startDate = new Date(Date.now() - rangeMs);
+/** Собственные визиты в админку в статистику сайта не попадают. */
+const isAdminPath = (path) => String(path || '').split('?')[0].startsWith('/admin');
 
-  const [
-    totalEvents,
-    pageViews,
-    uniqueSessions,
-    topPages,
-    topActions,
-    sessions,
-    hourlyActivity,
-  ] = await Promise.all([
-    analyticsRepo.countEvents(startDate),
-    analyticsRepo.countEvents(startDate, 'page_view'),
-    analyticsRepo.getDistinctSessions(startDate),
-    analyticsRepo.aggregateTopPages(startDate, 10),
-    analyticsRepo.aggregateTopActions(startDate, 10),
-    analyticsRepo.aggregateSessionDurations(startDate),
-    analyticsRepo.aggregateHourlyActivity(startDate),
+/**
+ * Принимает батч от трекера: нормализует, отсеивает чужие домены и админку,
+ * дописывает IP и гео, пишет одной вставкой.
+ */
+export const trackEvents = async ({ rawEvents, ip }) => {
+  const { events, dropped } = normalizeBatch(rawEvents);
+  if (!events.length) return { count: 0, dropped };
+
+  const allowedHosts = getAllowedHosts();
+  const eligible = events.filter((event) => {
+    if (isAdminPath(event.path)) return false;
+    // Событие без hostname пришло не от нашего трекера — не доверяем.
+    return event.hostname ? allowedHosts.has(event.hostname.toLowerCase()) : false;
+  });
+
+  if (!eligible.length) return { count: 0, dropped: rawEvents.length };
+  if (isDisabled()) return { count: 0, dropped: rawEvents.length };
+
+  const geo = lookupGeo(ip);
+  const rows = eligible.map((event) => ({ ...event, ip, ...geo }));
+
+  const count = await repo.insertEvents(rows);
+  return { count, dropped: rawEvents.length - count };
+};
+
+const TOP_LIMIT = 10;
+const COUNTRIES_LIMIT = 20;
+
+/** Сводка за период — всё, что рисует вкладка Overview, одним запросом. */
+export const getSummary = async (from, to) => {
+  const [totals, sessionStats, daily, topPages, sources, countries] = await Promise.all([
+    repo.getTotals(from, to),
+    repo.getSessionStats(from, to),
+    repo.getDaily(from, to),
+    repo.getTopPages(from, to, TOP_LIMIT),
+    repo.getSources(from, to, TOP_LIMIT),
+    repo.getCountries(from, to, COUNTRIES_LIMIT),
   ]);
 
-  const avgSessionDuration = calculateAvgSessionDuration(sessions);
-  const hourlyActivityFormatted = formatHourlyActivity(hourlyActivity);
-
   return {
-    totalEvents,
-    pageViews,
-    uniqueUsers: uniqueSessions.length,
-    avgSessionDuration,
-    topPages,
-    topActions,
-    hourlyActivity: hourlyActivityFormatted,
+    totals,
+    avg_session_seconds: Math.round(sessionStats.avg_session_seconds),
+    bounce_rate: sessionStats.bounce_rate,
+    daily,
+    top_pages: topPages,
+    sources,
+    countries,
   };
 };
 
-const calculateAvgSessionDuration = (sessions) => {
-  if (sessions.length === 0) return '0m';
+export const getDevices = (from, to, limit) => repo.getDevices(from, to, limit);
 
-  const totalMs = sessions.reduce((sum, session) => {
-    const duration = session.end - session.start;
-    return sum + duration;
-  }, 0);
+export const getSessions = (from, to, limit) => repo.getSessions(from, to, limit);
 
-  const avgMs = totalMs / sessions.length;
-  const minutes = Math.round(avgMs / 60000);
-
-  if (minutes < 1) return '<1m';
-  if (minutes < 60) return `${minutes}m`;
-
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-};
-
-const formatHourlyActivity = (rawActivity) => {
-  if (rawActivity.length === 0) return [];
-
-  const maxCount = Math.max(...rawActivity.map((h) => h.count), 1);
-
-  return rawActivity.map((item) => ({
-    hour: item._id,
-    count: item.count,
-    percentage: (item.count / maxCount) * 100,
-  }));
-};
-
-export const getSessions = async (range = '7d', limit = 50) => {
-  if (analyticsDisabled) return [];
-  const rangeMs = RANGE_MAP[range] || RANGE_MAP['7d'];
-  const startDate = new Date(Date.now() - rangeMs);
-
-  const sessions = await analyticsRepo.aggregateSessions(startDate, limit);
-
-  return sessions.map((session) => ({
-    ...session,
-    durationFormatted: formatDuration(session.duration),
-  }));
-};
-
-export const getSessionDetail = async (sessionId) => {
-  if (analyticsDisabled) return null;
-  const [summary, events] = await Promise.all([
-    analyticsRepo.getSessionSummary(sessionId),
-    analyticsRepo.getSessionEvents(sessionId),
-  ]);
-
-  if (!summary) return null;
-
-  return {
-    ...summary,
-    durationFormatted: formatDuration(summary.duration),
-    events: events.map((event) => ({
-      ...event,
-      timestamp: event.timestamp,
-    })),
-  };
-};
-
-const formatDuration = (durationMs) => {
-  if (durationMs < 1000) return '<1s';
-
-  const seconds = Math.floor(durationMs / 1000);
-  if (seconds < 60) return `${seconds}s`;
-
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-
-  if (minutes < 60) {
-    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-};
-
-export const deleteAllAnalytics = async () => {
-  if (analyticsDisabled) return { success: true, deletedCount: 0 };
-  const count = await analyticsRepo.deleteAllEvents();
-  return { success: true, deletedCount: count };
-};
-
-export const deleteAnalyticsByPeriod = async (days) => {
-  if (!days || days < 1) {
-    throw new Error('Invalid days parameter');
-  }
-  if (analyticsDisabled) {
-    return { success: true, deletedCount: 0, olderThan: days };
-  }
-
-  const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const count = await analyticsRepo.deleteEventsOlderThan(cutoffDate);
-  return { success: true, deletedCount: count, olderThan: days };
-};
-
-export const deleteSession = async (sessionId) => {
-  if (!sessionId) {
-    throw new Error('sessionId is required');
-  }
-  if (analyticsDisabled) {
-    return { success: true, deletedCount: 0 };
-  }
-
-  const count = await analyticsRepo.deleteSessionEvents(sessionId);
-  if (count === 0) {
-    throw new Error('Session not found');
-  }
-  return { success: true, deletedCount: count };
-};
-
-export const getAnalyticsInfo = async () => {
-  if (analyticsDisabled) {
-    return {
-      totalEvents: 0,
-      estimatedSize: '~0KB',
-      disabled: true,
-    };
-  }
-  const totalEvents = await analyticsRepo.getTotalEventsCount();
-  return {
-    totalEvents,
-    estimatedSize: `~${Math.round((totalEvents * 1.5) / 1024)}KB`,
-  };
+export const getSessionEvents = async (sessionId, limit) => {
+  const events = await repo.getSessionEvents(sessionId, limit);
+  // Пустой список неотличим от несуществующей сессии — уточняем отдельно,
+  // чтобы фронт мог показать 404, а не «событий нет».
+  if (!events.length && !(await repo.sessionExists(sessionId))) return null;
+  return events;
 };

@@ -1,313 +1,114 @@
 import * as analyticsService from '../services/analyticsService.js';
+import { getClientIp } from '../utils/geo.js';
 
-const DEFAULT_ALLOWED_ANALYTICS_HOSTS = ['dj-myportfolio.vercel.app', 'www.dj-myportfolio.vercel.app'];
+/** Период по умолчанию, если фронт не прислал from/to. */
+const DEFAULT_RANGE_DAYS = 7;
+const MAX_RANGE_DAYS = 400;
+const MAX_SESSIONS = 200;
+const MAX_SESSION_EVENTS = 1000;
 
-const getAllowedAnalyticsHosts = () => {
-  const envHosts = String(process.env.ANALYTICS_ALLOWED_HOSTS || '').trim();
-  const hosts = envHosts
-    ? envHosts.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
-    : DEFAULT_ALLOWED_ANALYTICS_HOSTS;
-  return new Set(hosts);
+const parseDate = (value, fallback) => {
+  if (!value) return fallback;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
 };
 
-const getHeaderString = (req, headerName) => String(req.headers[headerName] || '').trim();
+const parseLimit = (value, fallback, max) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+};
 
-const extractHost = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  try {
-    return new URL(raw).hostname.toLowerCase();
-  } catch {
-    return raw.split(':')[0].toLowerCase();
+/**
+ * Границы периода из query. Слишком широкий запрос обрезаем: иначе один
+ * кривой from на десять лет кладёт базу тяжёлой агрегацией.
+ */
+const parsePeriod = (query) => {
+  const to = parseDate(query.to, new Date());
+  const defaultFrom = new Date(to.getTime() - DEFAULT_RANGE_DAYS * 24 * 3600 * 1000);
+  let from = parseDate(query.from, defaultFrom);
+
+  const maxSpanMs = MAX_RANGE_DAYS * 24 * 3600 * 1000;
+  if (to.getTime() - from.getTime() > maxSpanMs) {
+    from = new Date(to.getTime() - maxSpanMs);
   }
-};
+  if (from > to) from = defaultFrom;
 
-const resolveEventHost = (req, event) => {
-  const directHost = extractHost(event?.hostname);
-  if (directHost) return directHost;
-
-  const eventOriginHost = extractHost(event?.origin);
-  if (eventOriginHost) return eventOriginHost;
-
-  const requestOriginHost = extractHost(getHeaderString(req, 'origin'));
-  if (requestOriginHost) return requestOriginHost;
-
-  const requestRefererHost = extractHost(getHeaderString(req, 'referer'));
-  if (requestRefererHost) return requestRefererHost;
-
-  const forwardedHost = extractHost(getHeaderString(req, 'x-forwarded-host'));
-  if (forwardedHost) return forwardedHost;
-
-  return extractHost(getHeaderString(req, 'host'));
-};
-
-const getClientIp = (req) => {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
-  }
-  const realIp = req.headers['x-real-ip'];
-  if (realIp) return realIp;
-
-  return req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown';
+  return { from, to };
 };
 
 export const trackEvents = async (req, res) => {
   try {
-    const { events, flushedAt } = req.body;
+    const rawEvents = req.body?.events;
 
-    if (!events || !Array.isArray(events)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payload: events must be an array',
-      });
+    if (!Array.isArray(rawEvents) || rawEvents.length === 0) {
+      return res.status(400).json({ success: false, message: 'events must be a non-empty array' });
     }
 
-    if (events.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payload: events array is empty',
-      });
-    }
-
-    const clientIp = getClientIp(req);
-    const geo = {
-      country: getHeaderString(req, 'x-vercel-ip-country'),
-      region: getHeaderString(req, 'x-vercel-ip-country-region'),
-      city: getHeaderString(req, 'x-vercel-ip-city'),
-    };
-    const allowedHosts = getAllowedAnalyticsHosts();
-
-    const filteredEvents = events.filter((event) => {
-      const page = String(event?.data?.page || event?.url || '').split('?')[0];
-      if (page.startsWith('/admin')) return false;
-
-      const host = resolveEventHost(req, event);
-      if (!host) return false;
-      return allowedHosts.has(host);
+    const result = await analyticsService.trackEvents({
+      rawEvents,
+      ip: getClientIp(req),
     });
 
-    if (filteredEvents.length === 0) {
-      return res.status(202).json({
-        success: true,
-        count: 0,
-        dropped: events.length,
-        message: 'No eligible analytics events to track',
-      });
-    }
-
-    const eventsWithMetadata = filteredEvents.map((event) => ({
-      ...event,
-      flushedAt,
-      ip: clientIp,
-      geo,
-    }));
-
-    const result = await analyticsService.trackEvents(eventsWithMetadata);
-
-    res.status(201).json({
-      success: true,
-      count: result.count,
-      disabled: process.env.ANALYTICS_DISABLED === '1',
-      message: `${result.count} event(s) tracked successfully`,
-    });
+    // 202: трекер не ждёт подтверждения и не ретраит — отвечаем «принято».
+    return res.status(202).json({ success: true, ...result });
   } catch (error) {
-    console.error('[ANALYTICS] Track events error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to track events',
-      error: error.message,
-    });
+    console.error('[analytics] track error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to track events' });
   }
 };
 
-export const getStats = async (req, res) => {
+export const getSummary = async (req, res) => {
   try {
-    const { range = '7d' } = req.query;
-
-    if (!['7d', '30d', '90d'].includes(range)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid range. Allowed values: 7d, 30d, 90d',
-      });
-    }
-
-    const stats = await analyticsService.getStats(range);
-
-    res.json({
-      success: true,
-      data: stats,
-      range,
-    });
+    const { from, to } = parsePeriod(req.query);
+    const summary = await analyticsService.getSummary(from, to);
+    return res.json({ success: true, data: summary });
   } catch (error) {
-    console.error('[ANALYTICS] Get stats error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get analytics stats',
-      error: error.message,
-    });
+    console.error('[analytics] summary error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load summary' });
+  }
+};
+
+export const getDevices = async (req, res) => {
+  try {
+    const { from, to } = parsePeriod(req.query);
+    const limit = parseLimit(req.query.limit, 10, 50);
+    const devices = await analyticsService.getDevices(from, to, limit);
+    return res.json({ success: true, data: devices });
+  } catch (error) {
+    console.error('[analytics] devices error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load devices' });
   }
 };
 
 export const getSessions = async (req, res) => {
   try {
-    const { range = '7d', limit = 50 } = req.query;
-
-    if (!['7d', '30d', '90d'].includes(range)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid range. Allowed values: 7d, 30d, 90d',
-      });
-    }
-
-    const sessions = await analyticsService.getSessions(range, parseInt(limit, 10));
-
-    res.json({
-      success: true,
-      data: sessions,
-      range,
-    });
+    const { from, to } = parsePeriod(req.query);
+    const limit = parseLimit(req.query.limit, 100, MAX_SESSIONS);
+    const sessions = await analyticsService.getSessions(from, to, limit);
+    return res.json({ success: true, data: sessions });
   } catch (error) {
-    console.error('[ANALYTICS] Get sessions error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get sessions',
-      error: error.message,
-    });
+    console.error('[analytics] sessions error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load sessions' });
   }
 };
 
-export const getSessionDetail = async (req, res) => {
+export const getSessionEvents = async (req, res) => {
   try {
-    const { sessionId } = req.params;
-
+    const sessionId = String(req.params.sessionId || '').trim();
     if (!sessionId) {
-      return res.status(400).json({
-        success: false,
-        message: 'sessionId is required',
-      });
+      return res.status(400).json({ success: false, message: 'sessionId is required' });
     }
 
-    const sessionDetail = await analyticsService.getSessionDetail(sessionId);
+    const limit = parseLimit(req.query.limit, 500, MAX_SESSION_EVENTS);
+    const events = await analyticsService.getSessionEvents(sessionId, limit);
 
-    if (!sessionDetail) {
-      return res.status(404).json({
-        success: false,
-        message: 'Session not found',
-      });
+    if (events === null) {
+      return res.status(404).json({ success: false, message: 'Session not found' });
     }
-
-    res.json({
-      success: true,
-      data: sessionDetail,
-    });
+    return res.json({ success: true, data: events });
   } catch (error) {
-    console.error('[ANALYTICS] Get session detail error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get session detail',
-      error: error.message,
-    });
-  }
-};
-
-export const deleteAllAnalytics = async (req, res) => {
-  try {
-    const result = await analyticsService.deleteAllAnalytics();
-
-    res.json({
-      success: true,
-      message: `Удалено ${result.deletedCount} событий`,
-      deletedCount: result.deletedCount,
-    });
-  } catch (error) {
-    console.error('[ANALYTICS] Delete all error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete analytics',
-      error: error.message,
-    });
-  }
-};
-
-export const deleteAnalyticsByPeriod = async (req, res) => {
-  try {
-    const { days } = req.body;
-
-    if (!days || typeof days !== 'number' || days < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'days must be a positive number',
-      });
-    }
-
-    const result = await analyticsService.deleteAnalyticsByPeriod(days);
-
-    res.json({
-      success: true,
-      message: `Удалены данные старше ${days} дней (${result.deletedCount} событий)`,
-      deletedCount: result.deletedCount,
-    });
-  } catch (error) {
-    console.error('[ANALYTICS] Delete by period error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete analytics by period',
-      error: error.message,
-    });
-  }
-};
-
-export const deleteSession = async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-
-    if (!sessionId) {
-      return res.status(400).json({
-        success: false,
-        message: 'sessionId is required',
-      });
-    }
-
-    const result = await analyticsService.deleteSession(sessionId);
-
-    res.json({
-      success: true,
-      message: `Сессия удалена (${result.deletedCount} событий)`,
-      deletedCount: result.deletedCount,
-    });
-  } catch (error) {
-    console.error('[ANALYTICS] Delete session error:', error);
-
-    if (error.message === 'Session not found') {
-      return res.status(404).json({
-        success: false,
-        message: 'Session not found',
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete session',
-      error: error.message,
-    });
-  }
-};
-
-export const getAnalyticsInfo = async (req, res) => {
-  try {
-    const info = await analyticsService.getAnalyticsInfo();
-
-    res.json({
-      success: true,
-      data: info,
-    });
-  } catch (error) {
-    console.error('[ANALYTICS] Get info error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get analytics info',
-      error: error.message,
-    });
+    console.error('[analytics] session events error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load session events' });
   }
 };

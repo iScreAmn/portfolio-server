@@ -1,0 +1,80 @@
+name: Deploy API
+
+on:
+  push:
+    branches: [main]
+  # Ручной перезапуск без коммита.
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Имя пакета в GHCR должно быть в нижнем регистре, а owner в GitHub
+      # может быть с заглавными (iScreAmn) — приводим явно.
+      - name: Resolve image name
+        id: meta
+        run: echo "tags=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tags }}:latest
+            ${{ steps.meta.outputs.tags }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            cd /opt/portfolio
+
+            # Сервер ничего не собирает — только тянет готовый образ.
+            docker compose pull api
+
+            # База должна быть поднята до миграций.
+            docker compose up -d db
+
+            # Миграции накатываются отдельным одноразовым контейнером из
+            # свежего образа: если они упадут, старый api продолжает работать.
+            docker compose run --rm api npx prisma migrate deploy
+
+            docker compose up -d api
+
+            docker image prune -f

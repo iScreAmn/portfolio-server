@@ -1,97 +1,80 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
+
+import { pingDB, disconnectDB } from './src/config/prisma.js';
 import contactRoutes from './src/contacts/routes/contactRoutes.js';
-import analyticsRoutes from './src/analytics/routes/analyticsRoutes.js';
-import authRoutes from './src/admin/routes/authRoutes.js';
 import calculatorRoutes from './src/calculator/routes/calculatorRoutes.js';
+import analyticsRoutes from './src/analytics/routes/analyticsRoutes.js';
+import authRoutes from './src/auth/routes/authRoutes.js';
 
 dotenv.config();
 
 const app = express();
-// 5000 can be occupied by macOS AirTunes on some machines.
 const PORT = Number(process.env.PORT || 5050);
+const isProduction = process.env.NODE_ENV === 'production';
 
-const extraOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean)
-  : [];
+/**
+ * Приложение всегда стоит за nginx, поэтому реальный IP приходит в
+ * X-Forwarded-For. Без этого express-rate-limit считал бы всех посетителей
+ * одним клиентом (IP прокси), а гео определялось бы по адресу контейнера.
+ * 1 — доверяем ровно одному прокси, нашему nginx.
+ */
+app.set('trust proxy', 1);
 
-const baseOrigins = [
-  'http://localhost:5173',
-  'http://localhost:3333',
-  'http://localhost:5180',
-  'http://localhost:4173',
-  'http://127.0.0.1:5173',
-  'http://127.0.0.1:3333',
-  'http://127.0.0.1:5180',
-  'http://127.0.0.1:4173',
-  'https://dj-myportfolio.vercel.app',
-  'https://www.dj-myportfolio.vercel.app',
-];
+/**
+ * Белый список источников. В проде — только сам сайт; для разработки
+ * добавляется localhost. Никаких «разрешить всё» даже в dev: правила
+ * должны совпадать с боевыми, иначе CORS ломается только после деплоя.
+ */
+const DEV_ORIGINS = ['http://localhost:3333', 'http://127.0.0.1:3333'];
 
-const allowedOrigins = [...new Set([...baseOrigins, ...extraOrigins])];
-
-/** Локальная разработка: любой origin (иначе 403 на [::1], LAN IP, кастомный порт) */
-const corsDevAllowAll =
-  process.env.CORS_DEV_ALLOW_ALL === '1' ||
-  (process.env.NODE_ENV !== 'production' && !process.env.VERCEL);
-
-const isLocalhostOrigin = (o) => {
-  try {
-    const u = new URL(o);
-    const h = u.hostname.toLowerCase();
-    if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1') {
-      return true;
-    }
-    if (h === '0.0.0.0') return true;
-    if (h.endsWith('.local')) return true;
-    // приватные сети (доступ с телефона в той же Wi‑Fi)
-    if (
-      h.startsWith('192.168.') ||
-      h.startsWith('10.') ||
-      /^(172\.(1[6-9]|2\d|3[0-1])\..+)/.test(h)
-    ) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-};
+const allowedOrigins = new Set([
+  ...String(process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+  ...(isProduction ? [] : DEV_ORIGINS),
+]);
 
 app.use(
   cors({
-    // Не вызывать callback(err) — иначе preflight может уйти в error handler без CORS-заголовков
     origin: (origin, callback) => {
+      // Запросы без Origin — это curl, healthcheck и серверные вызовы.
       if (!origin) return callback(null, true);
-      if (corsDevAllowAll) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      if (isLocalhostOrigin(origin)) {
-        return callback(null, true);
-      }
-      return callback(null, false);
+      callback(null, allowedOrigins.has(origin));
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
   }),
 );
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
-  }),
-);
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-app.use('/api/contact', contactRoutes);
-app.use('/api/admin', authRoutes);
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(cookieParser());
+app.use(express.json({ limit: '256kb' }));
+app.use(express.urlencoded({ extended: true, limit: '256kb' }));
+
+app.use('/api/auth', authRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/contact', contactRoutes);
 app.use('/api/calculator', calculatorRoutes);
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+/** Healthcheck для docker compose: проверяет и процесс, и связь с БД. */
+app.get('/api/health', async (req, res) => {
+  try {
+    await pingDB();
+    res.json({ status: 'ok', db: 'up', timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('[health] БД недоступна:', error.message || error);
+    res.status(503).json({ status: 'error', db: 'down' });
+  }
+});
+
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: 'Not found' });
 });
 
 app.use((err, req, res, next) => {
@@ -102,10 +85,26 @@ app.use((err, req, res, next) => {
   });
 });
 
-if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+const server = app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+/**
+ * Docker шлёт SIGTERM при `compose up -d` с новым образом. Дожидаемся
+ * текущих запросов и закрываем пул Postgres, иначе в логах копятся
+ * оборванные соединения.
+ */
+const shutdown = (signal) => async () => {
+  console.log(`${signal} received, shutting down`);
+  server.close(async () => {
+    await disconnectDB();
+    process.exit(0);
   });
-}
+  // Если за 10 секунд не закрылись — выходим принудительно.
+  setTimeout(() => process.exit(1), 10000).unref();
+};
+
+process.on('SIGTERM', shutdown('SIGTERM'));
+process.on('SIGINT', shutdown('SIGINT'));
 
 export default app;

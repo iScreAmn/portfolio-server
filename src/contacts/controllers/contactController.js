@@ -2,6 +2,10 @@ import { validationResult } from 'express-validator';
 import { sendContactEmail } from '../services/contactService.js';
 import { isSpamMessage } from '../middlewares/spamGuard.js';
 import { sendContactTelegramNotification } from '../../telegram/services/notifications.js';
+import { saveLead } from '../../leads/leadRepository.js';
+
+/** Простейшая проверка «свой-чужой» из формы. Ответ задаётся в env. */
+const getCaptchaAnswer = () => String(process.env.CONTACT_CAPTCHA_ANSWER || '').trim();
 
 export const handleContact = async (req, res) => {
   try {
@@ -27,7 +31,15 @@ export const handleContact = async (req, res) => {
 
     const { name, contactMethod, contactValue, message, captcha } = req.body;
 
-    if (captcha !== 'portfolio2024') {
+    const captchaAnswer = getCaptchaAnswer();
+    if (!captchaAnswer) {
+      console.error('[contact] CONTACT_CAPTCHA_ANSWER не задан');
+      return res.status(500).json({
+        success: false,
+        message: 'Form configuration is missing. Please contact administrator.'
+      });
+    }
+    if (captcha !== captchaAnswer) {
       return res.status(400).json({
         success: false,
         message: 'CAPTCHA verification failed'
@@ -57,6 +69,18 @@ export const handleContact = async (req, res) => {
       })
     };
 
+    // Сначала в БД, потом доставка: если оба канала упадут, заявка всё равно
+    // останется в таблице leads.
+    const savedLead = await saveLead({
+      type: 'contact',
+      name: contactData.name,
+      contact: contactData.contactValue,
+      method: contactData.contactMethod,
+      message: contactData.message,
+      ip: req.ip,
+      userAgent: req.get('user-agent')
+    });
+
     const [emailResult, telegramResult] = await Promise.allSettled([
       sendContactEmail(contactData),
       sendContactTelegramNotification(contactData)
@@ -76,7 +100,14 @@ export const handleContact = async (req, res) => {
       console.error('Contact email failed:', emailResult.reason?.message || emailResult.reason);
     }
 
-    const deliveryOk = emailResult.status === 'fulfilled' || telegramResult.status === 'fulfilled';
+    // Выключенный телеграм резолвится со skipped — это не доставка.
+    const telegramDelivered =
+      telegramResult.status === 'fulfilled' && telegramResult.value?.skipped !== true;
+    const emailDelivered = emailResult.status === 'fulfilled';
+
+    // Заявка сохранена в БД — значит, она не потеряна, даже если ни письмо,
+    // ни телеграм не ушли. Ошибку отдаём только когда пропало всё сразу.
+    const deliveryOk = emailDelivered || telegramDelivered || Boolean(savedLead);
     if (!deliveryOk) {
       return res.status(500).json({
         success: false,

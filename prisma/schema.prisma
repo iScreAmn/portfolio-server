@@ -1,0 +1,135 @@
+// Единственный источник правды по схеме БД.
+// Изменил модель -> `npm run db:migrate -- --name <что_сделал>` локально,
+// на сервере миграции накатывает деплой шагом `prisma migrate deploy`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  owner
+  developer
+}
+
+enum LeadType {
+  contact
+  calculator
+}
+
+/// Учётка админки. Регистрации снаружи нет: первого пользователя заводит
+/// `prisma/seed.js`, остальных — владелец руками.
+model User {
+  id           String @id @default(uuid()) @db.Uuid
+  email        String @unique
+  passwordHash String @map("password_hash")
+  role         Role   @default(admin)
+
+  /// Метка последней смены пароля. Попадает в access-токен: если пароль
+  /// сменили, все ранее выданные токены перестают проходить проверку.
+  passwordUpdatedAt DateTime @default(now()) @map("password_updated_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+/// Выданные refresh-токены. Храним sha256-хеш, а не сам токен: утечка дампа
+/// БД не даёт возможности войти.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  userAgent String?   @map("user_agent")
+  ip        String?
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// Сырое событие трекера. Поля повторяют то, что шлёт фронтовый
+/// `lib/analytics.js`; country/region/city дописывает сервер по IP.
+/// Сессии отдельной таблицей не храним — считаем агрегатом по session_id.
+model AnalyticsEvent {
+  // Int, а не BigInt: 2.1 млрд событий портфолио не наберёт, зато id
+  // безопасно уходит в JSON (BigInt ломает JSON.stringify).
+  id         Int      @id @default(autoincrement())
+  sessionId  String   @map("session_id")
+  visitorId  String?  @map("visitor_id")
+  /// Время события по часам клиента.
+  occurredAt DateTime @map("occurred_at")
+  /// Время приёма сервером — по нему видно расхождение с часами клиента.
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  category String
+  action   String
+  label    String?
+  params   Json?
+
+  path     String?
+  url      String?
+  hostname String?
+  referrer String?
+
+  sourceType  String? @map("source_type")
+  utmSource   String? @map("utm_source")
+  utmMedium   String? @map("utm_medium")
+  utmCampaign String? @map("utm_campaign")
+  utmTerm     String? @map("utm_term")
+  utmContent  String? @map("utm_content")
+
+  deviceType   String? @map("device_type")
+  os           String?
+  browser      String?
+  screenWidth  Int?    @map("screen_width")
+  screenHeight Int?    @map("screen_height")
+
+  locale   String?
+  timezone String?
+
+  country String?
+  region  String?
+  city    String?
+  ip      String?
+
+  @@index([occurredAt])
+  @@index([sessionId, occurredAt])
+  @@index([category, action, occurredAt])
+  @@index([visitorId])
+  @@map("analytics_events")
+}
+
+/// Заявка из формы контактов или калькулятора. Пишется до отправки письма и
+/// телеграма, чтобы заявка не потерялась, если оба канала доставки упадут.
+model Lead {
+  id      String   @id @default(uuid()) @db.Uuid
+  type    LeadType
+  name    String
+  /// Телефон, email или телеграм — что выбрал отправитель.
+  contact String
+  /// Предпочтительный канал связи; заполняется только для формы контактов.
+  method  String?
+  message String?
+  /// Параметры калькулятора целиком, как пришли с фронта.
+  payload Json?
+
+  ip        String?
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([type, createdAt])
+  @@map("leads")
+}

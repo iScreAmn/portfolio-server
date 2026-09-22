@@ -1,338 +1,194 @@
-import { getDB } from '../../config/db.js';
+import { prisma } from '../../config/prisma.js';
 
-const COLLECTION_NAME = 'analytics_events';
-
-const analyticsTz = () => String(process.env.ANALYTICS_TIMEZONE || 'UTC').trim() || 'UTC';
+/**
+ * Агрегаты считает Postgres, а не Node: выборки по сессиям требуют
+ * DISTINCT ON и FILTER, которые в query-билдере Prisma не выражаются.
+ *
+ * Все COUNT приводятся к ::int намеренно — иначе драйвер отдаёт BigInt,
+ * который потом ломает JSON.stringify в ответе.
+ */
 
 export const insertEvents = async (events) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  const now = new Date();
-  const documents = events.map((event) => ({
-    ...event,
-    timestamp: new Date(event.timestamp),
-    receivedAt: now,
-    flushedAt: event.flushedAt ? new Date(event.flushedAt) : now,
-  }));
-
-  const result = await collection.insertMany(documents);
-  return result.insertedCount;
+  if (!events.length) return 0;
+  const { count } = await prisma.analyticsEvent.createMany({ data: events });
+  return count;
 };
 
-export const countEvents = async (startDate, eventType = null) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  const query = { timestamp: { $gte: startDate } };
-  if (eventType) {
-    query.type = eventType;
-  }
-
-  return collection.countDocuments(query);
+export const getTotals = async (from, to) => {
+  const [row] = await prisma.$queryRaw`
+    SELECT
+      COUNT(*)::int AS events,
+      COUNT(*) FILTER (WHERE category = 'page' AND action = 'pageview')::int AS pageviews,
+      COUNT(DISTINCT session_id)::int AS sessions,
+      COUNT(DISTINCT visitor_id)::int AS visitors
+    FROM analytics_events
+    WHERE occurred_at >= ${from} AND occurred_at < ${to}
+  `;
+  return row;
 };
 
-export const getDistinctSessions = async (startDate) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  return collection.distinct('sessionId', { timestamp: { $gte: startDate } });
+/** Средняя длительность визита и доля сессий ровно с одним просмотром. */
+export const getSessionStats = async (from, to) => {
+  const [row] = await prisma.$queryRaw`
+    WITH sess AS (
+      SELECT
+        session_id,
+        MIN(occurred_at) AS started_at,
+        MAX(occurred_at) AS ended_at,
+        COUNT(*) FILTER (WHERE category = 'page' AND action = 'pageview') AS pageviews
+      FROM analytics_events
+      WHERE occurred_at >= ${from} AND occurred_at < ${to}
+      GROUP BY session_id
+    )
+    SELECT
+      COALESCE(AVG(EXTRACT(EPOCH FROM (ended_at - started_at))), 0)::float AS avg_session_seconds,
+      COALESCE(AVG(CASE WHEN pageviews <= 1 THEN 1 ELSE 0 END), 0)::float AS bounce_rate
+    FROM sess
+  `;
+  return row;
 };
 
-export const aggregateTopPages = async (startDate, limit = 10) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
+/**
+ * Дни в UTC: фронт достраивает пропуски по UTC-ключам, и если считать
+ * в локальной зоне, границы разъедутся и в графике появятся дубли.
+ */
+export const getDaily = (from, to) => prisma.$queryRaw`
+  SELECT
+    to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+    COUNT(DISTINCT session_id)::int AS sessions,
+    COUNT(*) FILTER (WHERE category = 'page' AND action = 'pageview')::int AS pageviews
+  FROM analytics_events
+  WHERE occurred_at >= ${from} AND occurred_at < ${to}
+  GROUP BY day
+  ORDER BY day ASC
+`;
 
-  return collection
-    .aggregate([
-      {
-        $match: {
-          type: 'page_view',
-          timestamp: { $gte: startDate },
-          'data.page': { $not: /^\/admin(?:\/|$)/ },
-        },
-      },
-      {
-        $group: {
-          _id: '$data.page',
-          views: { $sum: 1 },
-        },
-      },
-      { $sort: { views: -1 } },
-      { $limit: limit },
-      {
-        $project: {
-          name: '$_id',
-          views: 1,
-          _id: 0,
-        },
-      },
-    ])
-    .toArray();
-};
+/** Query-строка в пути не нужна: /portfolio?ref=x и /portfolio — одна страница. */
+export const getTopPages = (from, to, limit) => prisma.$queryRaw`
+  SELECT
+    split_part(COALESCE(path, ''), '?', 1) AS path,
+    COUNT(*)::int AS pageviews
+  FROM analytics_events
+  WHERE occurred_at >= ${from} AND occurred_at < ${to}
+    AND category = 'page' AND action = 'pageview'
+    AND COALESCE(path, '') NOT LIKE '/admin%'
+  GROUP BY 1
+  HAVING split_part(COALESCE(path, ''), '?', 1) <> ''
+  ORDER BY pageviews DESC
+  LIMIT ${limit}
+`;
 
-/** Portfolio: clicks + control_action (diagnoz-compatible), keyed by data.element or data.action */
-export const aggregateTopActions = async (startDate, limit = 10) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
+/**
+ * Источник, страна и устройство — свойства визита, а не события, поэтому
+ * берутся из первого события сессии (DISTINCT ON + ORDER BY occurred_at).
+ */
+export const getSources = (from, to, limit) => prisma.$queryRaw`
+  WITH first_ev AS (
+    SELECT DISTINCT ON (session_id) session_id, source_type
+    FROM analytics_events
+    WHERE occurred_at >= ${from} AND occurred_at < ${to}
+    ORDER BY session_id, occurred_at ASC
+  )
+  SELECT COALESCE(NULLIF(source_type, ''), 'unknown') AS source_type, COUNT(*)::int AS sessions
+  FROM first_ev
+  GROUP BY 1
+  ORDER BY sessions DESC
+  LIMIT ${limit}
+`;
 
-  return collection
-    .aggregate([
-      {
-        $match: {
-          type: { $in: ['control_action', 'click'] },
-          timestamp: { $gte: startDate },
-        },
-      },
-      {
-        $addFields: {
-          actionLabel: {
-            $ifNull: ['$data.action', '$data.element'],
-          },
-        },
-      },
-      {
-        $match: {
-          actionLabel: { $ne: null },
-        },
-      },
-      {
-        $group: {
-          _id: '$actionLabel',
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { count: -1 } },
-      { $limit: limit },
-      {
-        $project: {
-          name: '$_id',
-          count: 1,
-          _id: 0,
-        },
-      },
-    ])
-    .toArray();
-};
+export const getCountries = (from, to, limit) => prisma.$queryRaw`
+  WITH first_ev AS (
+    SELECT DISTINCT ON (session_id) session_id, country
+    FROM analytics_events
+    WHERE occurred_at >= ${from} AND occurred_at < ${to}
+    ORDER BY session_id, occurred_at ASC
+  )
+  SELECT country, COUNT(*)::int AS sessions
+  FROM first_ev
+  WHERE COALESCE(country, '') <> ''
+  GROUP BY country
+  ORDER BY sessions DESC
+  LIMIT ${limit}
+`;
 
-export const aggregateSessionDurations = async (startDate) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
+export const getDevices = (from, to, limit) => prisma.$queryRaw`
+  WITH first_ev AS (
+    SELECT DISTINCT ON (session_id) session_id, device_type, os, browser
+    FROM analytics_events
+    WHERE occurred_at >= ${from} AND occurred_at < ${to}
+    ORDER BY session_id, occurred_at ASC
+  )
+  SELECT
+    COALESCE(NULLIF(device_type, ''), 'unknown') AS device_type,
+    COALESCE(NULLIF(os, ''), 'unknown') AS os,
+    COALESCE(NULLIF(browser, ''), 'unknown') AS browser,
+    COUNT(*)::int AS sessions
+  FROM first_ev
+  GROUP BY 1, 2, 3
+  ORDER BY sessions DESC
+  LIMIT ${limit}
+`;
 
-  return collection
-    .aggregate([
-      {
-        $match: {
-          timestamp: { $gte: startDate },
-        },
-      },
-      {
-        $group: {
-          _id: '$sessionId',
-          start: { $min: '$timestamp' },
-          end: { $max: '$timestamp' },
-        },
-      },
-    ])
-    .toArray();
-};
+/** Список визитов: агрегаты + атрибуты первого события + точки входа/выхода. */
+export const getSessions = (from, to, limit) => prisma.$queryRaw`
+  WITH ev AS (
+    SELECT * FROM analytics_events
+    WHERE occurred_at >= ${from} AND occurred_at < ${to}
+  ),
+  agg AS (
+    SELECT
+      session_id,
+      MIN(occurred_at) AS started_at,
+      MAX(occurred_at) AS ended_at,
+      COUNT(*)::int AS events,
+      COUNT(*) FILTER (WHERE category = 'page' AND action = 'pageview')::int AS pageviews
+    FROM ev
+    GROUP BY session_id
+  ),
+  first_ev AS (
+    SELECT DISTINCT ON (session_id)
+      session_id, visitor_id, device_type, os, browser,
+      country, region, city, referrer, source_type, utm_source
+    FROM ev
+    ORDER BY session_id, occurred_at ASC
+  ),
+  entry AS (
+    SELECT DISTINCT ON (session_id) session_id, path
+    FROM ev WHERE category = 'page' AND action = 'pageview'
+    ORDER BY session_id, occurred_at ASC
+  ),
+  exit_page AS (
+    SELECT DISTINCT ON (session_id) session_id, path
+    FROM ev WHERE category = 'page' AND action = 'pageview'
+    ORDER BY session_id, occurred_at DESC
+  )
+  SELECT
+    a.session_id, a.started_at, a.ended_at, a.events, a.pageviews,
+    f.visitor_id, f.device_type, f.os, f.browser,
+    f.country, f.region, f.city, f.referrer, f.utm_source,
+    COALESCE(NULLIF(f.source_type, ''), 'unknown') AS source_type,
+    e.path AS entry_path,
+    x.path AS exit_path
+  FROM agg a
+  JOIN first_ev f USING (session_id)
+  LEFT JOIN entry e USING (session_id)
+  LEFT JOIN exit_page x USING (session_id)
+  ORDER BY a.started_at DESC
+  LIMIT ${limit}
+`;
 
-export const aggregateHourlyActivity = async (startDate) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-  const tz = analyticsTz();
+export const getSessionEvents = (sessionId, limit) => prisma.$queryRaw`
+  SELECT occurred_at, category, action, label, path, params
+  FROM analytics_events
+  WHERE session_id = ${sessionId}
+  ORDER BY occurred_at ASC
+  LIMIT ${limit}
+`;
 
-  return collection
-    .aggregate([
-      {
-        $match: {
-          timestamp: { $gte: startDate },
-        },
-      },
-      {
-        $project: {
-          hour: { $hour: { date: '$timestamp', timezone: tz } },
-        },
-      },
-      {
-        $group: {
-          _id: '$hour',
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ])
-    .toArray();
-};
-
-export const ensureIndexes = async () => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  await collection.createIndex({ timestamp: -1 });
-  await collection.createIndex({ type: 1, timestamp: -1 });
-  await collection.createIndex({ sessionId: 1, timestamp: 1 });
-  await collection.createIndex({ userId: 1 }, { sparse: true });
-  await collection.createIndex({ ip: 1 }, { sparse: true });
-  await collection.createIndex({ 'geo.country': 1, 'geo.city': 1 }, { sparse: true });
-
-  console.log('[ANALYTICS] Indexes ensured');
-};
-
-export const aggregateSessions = async (startDate, limit = 50) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  return collection
-    .aggregate([
-      {
-        $match: {
-          timestamp: { $gte: startDate },
-        },
-      },
-      {
-        $sort: { timestamp: 1 },
-      },
-      {
-        $group: {
-          _id: '$sessionId',
-          firstEvent: { $first: '$$ROOT' },
-          lastEvent: { $last: '$$ROOT' },
-          start: { $min: '$timestamp' },
-          end: { $max: '$timestamp' },
-          eventsCount: { $sum: 1 },
-          pages: { $addToSet: '$url' },
-        },
-      },
-      {
-        $project: {
-          sessionId: '$_id',
-          start: 1,
-          end: 1,
-          duration: { $subtract: ['$end', '$start'] },
-          eventsCount: 1,
-          pagesCount: { $size: '$pages' },
-          ip: '$firstEvent.ip',
-          geo: '$firstEvent.geo',
-          country: '$firstEvent.geo.country',
-          city: '$firstEvent.geo.city',
-          referrer: '$firstEvent.referrer',
-          trafficSource: '$firstEvent.trafficSource',
-          sourceType: {
-            $ifNull: [
-              '$firstEvent.trafficSource.sourceType',
-              { $cond: [{ $ifNull: ['$firstEvent.referrer', false] }, 'referral', 'direct'] },
-            ],
-          },
-          sourceHost: '$firstEvent.trafficSource.sourceHost',
-          device: '$firstEvent.device',
-          locale: '$firstEvent.locale',
-          timezone: '$firstEvent.timezone',
-          _id: 0,
-        },
-      },
-      { $sort: { start: -1 } },
-      { $limit: limit },
-    ])
-    .toArray();
-};
-
-export const getSessionEvents = async (sessionId) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  return collection.find({ sessionId }).sort({ timestamp: 1 }).toArray();
-};
-
-export const getSessionSummary = async (sessionId) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  const result = await collection
-    .aggregate([
-      {
-        $match: { sessionId },
-      },
-      {
-        $sort: { timestamp: 1 },
-      },
-      {
-        $group: {
-          _id: '$sessionId',
-          firstEvent: { $first: '$$ROOT' },
-          lastEvent: { $last: '$$ROOT' },
-          start: { $min: '$timestamp' },
-          end: { $max: '$timestamp' },
-          eventsCount: { $sum: 1 },
-          pages: { $addToSet: '$url' },
-          eventTypes: { $push: '$type' },
-        },
-      },
-      {
-        $project: {
-          sessionId: '$_id',
-          start: 1,
-          end: 1,
-          duration: { $subtract: ['$end', '$start'] },
-          eventsCount: 1,
-          pagesCount: { $size: '$pages' },
-          pages: 1,
-          eventTypes: 1,
-          ip: '$firstEvent.ip',
-          geo: '$firstEvent.geo',
-          country: '$firstEvent.geo.country',
-          city: '$firstEvent.geo.city',
-          referrer: '$firstEvent.referrer',
-          trafficSource: '$firstEvent.trafficSource',
-          sourceType: {
-            $ifNull: [
-              '$firstEvent.trafficSource.sourceType',
-              { $cond: [{ $ifNull: ['$firstEvent.referrer', false] }, 'referral', 'direct'] },
-            ],
-          },
-          sourceHost: '$firstEvent.trafficSource.sourceHost',
-          device: '$firstEvent.device',
-          locale: '$firstEvent.locale',
-          timezone: '$firstEvent.timezone',
-          userAgent: '$firstEvent.userAgent',
-          _id: 0,
-        },
-      },
-    ])
-    .toArray();
-
-  return result[0] || null;
-};
-
-export const deleteAllEvents = async () => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  const result = await collection.deleteMany({});
-  return result.deletedCount;
-};
-
-export const deleteEventsOlderThan = async (date) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  const result = await collection.deleteMany({
-    timestamp: { $lt: date },
+export const sessionExists = async (sessionId) => {
+  const found = await prisma.analyticsEvent.findFirst({
+    where: { sessionId },
+    select: { id: true },
   });
-  return result.deletedCount;
-};
-
-export const deleteSessionEvents = async (sessionId) => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  const result = await collection.deleteMany({ sessionId });
-  return result.deletedCount;
-};
-
-export const getTotalEventsCount = async () => {
-  const db = await getDB();
-  const collection = db.collection(COLLECTION_NAME);
-
-  return collection.countDocuments({});
+  return Boolean(found);
 };

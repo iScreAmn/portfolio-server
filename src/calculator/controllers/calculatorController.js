@@ -1,6 +1,7 @@
 import { validationResult } from 'express-validator';
 import { sendCalculatorEmail } from '../services/calculatorService.js';
 import { sendCalculatorTelegramNotification } from '../../telegram/services/notifications.js';
+import { saveLead } from '../../leads/leadRepository.js';
 
 export const handleCalculator = async (req, res) => {
   try {
@@ -61,6 +62,27 @@ export const handleCalculator = async (req, res) => {
       })
     };
 
+    // Сначала в БД, потом доставка: если оба канала упадут, заявка всё равно
+    // останется в таблице leads.
+    const savedLead = await saveLead({
+      type: 'calculator',
+      name: calculatorData.name,
+      contact: calculatorData.contact,
+      message: calculatorData.message,
+      payload: {
+        projectType: calculatorData.projectType,
+        goals: calculatorData.goals,
+        scope: calculatorData.scope,
+        designApproach: calculatorData.designApproach,
+        features: calculatorData.features,
+        content: calculatorData.content,
+        timeline: calculatorData.timeline,
+        support: calculatorData.support
+      },
+      ip: req.ip,
+      userAgent: req.get('user-agent')
+    });
+
     const [emailResult, telegramResult] = await Promise.allSettled([
       sendCalculatorEmail(calculatorData),
       sendCalculatorTelegramNotification(calculatorData)
@@ -80,7 +102,14 @@ export const handleCalculator = async (req, res) => {
       console.error('Calculator email failed:', emailResult.reason?.message || emailResult.reason);
     }
 
-    const deliveryOk = emailResult.status === 'fulfilled' || telegramResult.status === 'fulfilled';
+    // Выключенный телеграм резолвится со skipped — это не доставка.
+    const telegramDelivered =
+      telegramResult.status === 'fulfilled' && telegramResult.value?.skipped !== true;
+    const emailDelivered = emailResult.status === 'fulfilled';
+
+    // Заявка сохранена в БД — значит, она не потеряна, даже если ни письмо,
+    // ни телеграм не ушли. Ошибку отдаём только когда пропало всё сразу.
+    const deliveryOk = emailDelivered || telegramDelivered || Boolean(savedLead);
     if (!deliveryOk) {
       return res.status(500).json({
         success: false,

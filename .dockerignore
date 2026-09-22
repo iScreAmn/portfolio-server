@@ -1,0 +1,23 @@
+node_modules
+
+.git
+.github
+.gitignore
+
+.env
+.env.*
+!.env.example
+
+# Конфиги для сервера в образ не нужны — они лежат на самом сервере.
+deploy
+
+.vscode
+.idea
+.DS_Store
+
+README.md
+README-deploy.md
+Dockerfile
+.dockerignore
+npm-debug.log*
+*.log
