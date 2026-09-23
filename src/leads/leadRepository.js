@@ -1,6 +1,6 @@
 import { prisma } from '../config/prisma.js';
 
-export const LEAD_STATUSES = ['new', 'in_progress', 'promotion', 'done', 'spam'];
+export const LEAD_STATUSES = ['new', 'in_progress', 'promotion', 'done'];
 
 /**
  * Наружу `type` уходит как `source`: админке важно откуда пришёл клиент, а не
@@ -18,6 +18,7 @@ export const LEAD_SOURCES = Object.keys(SOURCE_TO_TYPE);
 const toClient = (lead) => ({
   id: lead.id,
   name: lead.name,
+  company: lead.company || null,
   contactMethod: lead.method || null,
   contactValue: lead.contact,
   message: lead.message || null,
@@ -88,12 +89,20 @@ export const listLeads = async ({ status, source, limit = 200 } = {}) => {
 };
 
 /** Клиент, заведённый руками из админки. Письма и телеграма по нему нет. */
-export const createManualLead = async ({ name, contactMethod, contactValue, message, note }) =>
+export const createManualLead = async ({
+  name,
+  company,
+  contactMethod,
+  contactValue,
+  message,
+  note,
+}) =>
   toClient(
     await prisma.lead.create({
       data: {
         type: 'manual',
         name,
+        company: company || null,
         contact: contactValue,
         method: contactMethod || null,
         message: message || null,
@@ -103,10 +112,15 @@ export const createManualLead = async ({ name, contactMethod, contactValue, mess
   );
 
 /** Меняет только переданные поля: PATCH без note не должен стирать заметку. */
-export const updateLead = async (id, { status, note }) => {
+export const updateLead = async (id, { status, note, company, contactValue, message, name }) => {
   const data = {};
   if (status !== undefined) data.status = status;
   if (note !== undefined) data.note = note || null;
+  if (company !== undefined) data.company = company || null;
+  if (message !== undefined) data.message = message || null;
+  // Наружу поле зовётся contactValue, в базе это колонка contact.
+  if (contactValue !== undefined) data.contact = contactValue;
+  if (name !== undefined) data.name = name;
 
   if (Object.keys(data).length === 0) {
     const existing = await prisma.lead.findUnique({ where: { id } });

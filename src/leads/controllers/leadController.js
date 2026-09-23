@@ -35,9 +35,10 @@ export const postLead = async (req, res) => {
   if (!errors.isEmpty()) return badRequest(res, errors);
 
   try {
-    const { name, contactMethod, contactValue, message, note } = req.body;
+    const { name, company, contactMethod, contactValue, message, note } = req.body;
     const lead = await createManualLead({
       name: name.trim(),
+      company: (company ?? '').trim(),
       contactMethod,
       contactValue: contactValue.trim(),
       message: (message ?? '').trim(),
@@ -58,6 +59,10 @@ export const patchLead = async (req, res) => {
     const lead = await updateLead(req.params.id, {
       status: req.body.status,
       note: req.body.note,
+      company: req.body.company,
+      message: req.body.message,
+      contactValue: req.body.contactValue,
+      name: req.body.name,
     });
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
     return res.json({ success: true, data: lead });

@@ -14,6 +14,7 @@ export const leadIdRules = [param('id').isUUID().withMessage('Некоррект
  */
 export const createLeadRules = [
   body('name').trim().notEmpty().withMessage('Укажите имя').isLength({ max: 100 }),
+  body('company').optional({ values: 'falsy' }).trim().isLength({ max: 120 }),
   body('contactMethod')
     .trim()
     .notEmpty()
@@ -33,6 +34,23 @@ export const updateLeadRules = [
   ...leadIdRules,
   body('status').optional().isIn(LEAD_STATUSES).withMessage('Неизвестный статус'),
   body('note').optional({ nullable: true }).isLength({ max: 2000 }),
+  body('company').optional({ nullable: true }).trim().isLength({ max: 120 }),
+  body('message').optional({ nullable: true }).trim().isLength({ max: 2000 }),
+  // Контакт и имя правят из карточки, поэтому пустыми их оставлять нельзя:
+  // по контакту строится ссылка для быстрого ответа, а без имени строка в
+  // списке потеряла бы смысл.
+  body('contactValue')
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage('Укажите контакт')
+    .isLength({ max: 200 }),
+  body('name')
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage('Укажите имя')
+    .isLength({ max: 100 }),
 ];
 
 export const listLeadsRules = [
