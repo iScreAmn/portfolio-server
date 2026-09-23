@@ -1,6 +1,3 @@
-// Единственный источник правды по схеме БД.
-// Изменил модель -> `npm run db:migrate -- --name <что_сделал>` локально,
-// на сервере миграции накатывает деплой шагом `prisma migrate deploy`.
 
 generator client {
   provider = "prisma-client-js"
@@ -17,16 +14,14 @@ enum Role {
   developer
 }
 
-/// Откуда взялась заявка. `manual` — клиент, заведённый руками из админки:
-/// формы он не заполнял, письма и телеграма по нему не было.
+
 enum LeadType {
   contact
   calculator
   manual
 }
 
-/// Стадия работы с клиентом в мини-CRM. Воронки со суммами здесь нет —
-/// только «разобрана заявка или нет».
+
 enum LeadStatus {
   new
   in_progress
@@ -34,16 +29,13 @@ enum LeadStatus {
   done
 }
 
-/// Учётка админки. Регистрации снаружи нет: первого пользователя заводит
-/// `prisma/seed.js`, остальных — владелец руками.
+
 model User {
   id           String @id @default(uuid()) @db.Uuid
   email        String @unique
   passwordHash String @map("password_hash")
   role         Role   @default(admin)
 
-  /// Метка последней смены пароля. Попадает в access-токен: если пароль
-  /// сменили, все ранее выданные токены перестают проходить проверку.
   passwordUpdatedAt DateTime @default(now()) @map("password_updated_at")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
@@ -53,8 +45,6 @@ model User {
   @@map("users")
 }
 
-/// Выданные refresh-токены. Храним sha256-хеш, а не сам токен: утечка дампа
-/// БД не даёт возможности войти.
 model RefreshToken {
   id        String    @id @default(uuid()) @db.Uuid
   userId    String    @map("user_id") @db.Uuid
@@ -72,18 +62,14 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
-/// Сырое событие трекера. Поля повторяют то, что шлёт фронтовый
-/// `lib/analytics.js`; country/region/city дописывает сервер по IP.
-/// Сессии отдельной таблицей не храним — считаем агрегатом по session_id.
+
 model AnalyticsEvent {
   // Int, а не BigInt: 2.1 млрд событий портфолио не наберёт, зато id
   // безопасно уходит в JSON (BigInt ломает JSON.stringify).
   id         Int      @id @default(autoincrement())
   sessionId  String   @map("session_id")
   visitorId  String?  @map("visitor_id")
-  /// Время события по часам клиента.
   occurredAt DateTime @map("occurred_at")
-  /// Время приёма сервером — по нему видно расхождение с часами клиента.
   receivedAt DateTime @default(now()) @map("received_at")
 
   category String
@@ -124,31 +110,20 @@ model AnalyticsEvent {
   @@map("analytics_events")
 }
 
-/// Заявка из формы контактов или калькулятора. Пишется до отправки письма и
-/// телеграма, чтобы заявка не потерялась, если оба канала доставки упадут.
-///
-/// Эта же таблица — источник мини-CRM: клиент, заведённый руками из админки,
-/// это Lead с type = manual. Отдельной таблицы клиентов нет намеренно, иначе
-/// каждая заявка с сайта дублировалась бы в двух местах.
 model Lead {
   id      String   @id @default(uuid()) @db.Uuid
   type    LeadType
   name    String
-  /// Компания клиента. Форма контактов её не спрашивает — заполняется только
-  /// у клиентов, заведённых вручную из админки.
   company String?
-  /// Телефон, email или телеграм — что выбрал отправитель.
   contact String
-  /// Предпочтительный канал связи; заполняется только для формы контактов.
   method  String?
   message String?
-  /// Параметры калькулятора целиком, как пришли с фронта.
   payload Json?
 
-  /// Стадия работы. Заявки с сайта приходят как new.
   status LeadStatus @default(new)
-  /// Приватная заметка администратора. Посетителю не видна нигде.
   note   String?
+
+  sortOrder Int @default(0) @map("sort_order")
 
   ip        String?
   userAgent String?  @map("user_agent")
@@ -157,5 +132,6 @@ model Lead {
 
   @@index([type, createdAt])
   @@index([status, createdAt])
+  @@index([sortOrder, createdAt])
   @@map("leads")
 }
