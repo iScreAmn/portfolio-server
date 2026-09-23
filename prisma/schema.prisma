@@ -135,3 +135,31 @@ model Lead {
   @@index([sortOrder, createdAt])
   @@map("leads")
 }
+
+
+enum ReviewStatus {
+  pending
+  approved
+}
+
+
+model Review {
+  id      String  @id @default(uuid()) @db.Uuid
+  name    String
+  company String?
+  text    String
+
+  photo String?
+  logo  String?
+
+  status     ReviewStatus @default(pending)
+  approvedAt DateTime?    @map("approved_at")
+
+  ip        String?
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@map("reviews")
+}
