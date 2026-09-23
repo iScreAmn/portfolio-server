@@ -3,6 +3,7 @@ import {
   listLeads,
   createManualLead,
   updateLead,
+  reorderLeads,
   deleteLead,
 } from '../leadRepository.js';
 
@@ -69,6 +70,20 @@ export const patchLead = async (req, res) => {
   } catch (error) {
     console.error('[leads] не удалось обновить клиента:', error.message || error);
     return res.status(500).json({ success: false, message: 'Failed to update lead' });
+  }
+};
+
+export const patchLeadsOrder = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return badRequest(res, errors);
+
+  try {
+    const applied = await reorderLeads(req.body.ids);
+    if (!applied) return res.status(404).json({ success: false, message: 'Leads not found' });
+    return res.json({ success: true, data: { ids: req.body.ids } });
+  } catch (error) {
+    console.error('[leads] не удалось сохранить порядок:', error.message || error);
+    return res.status(500).json({ success: false, message: 'Failed to reorder leads' });
   }
 };
 

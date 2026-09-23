@@ -2,16 +2,6 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../src/config/prisma.js';
 
-/**
- * Заводит первого пользователя админки. Регистрации снаружи нет, поэтому это
- * единственный способ получить доступ на чистой базе.
- *
- *   ADMIN_EMAIL=me@djcode.ge ADMIN_PASSWORD='...' npm run db:seed
- *
- * Идемпотентно: если пользователь с таким email уже есть, ничего не меняет —
- * пароль перетирать нельзя, иначе повторный деплой откатывал бы его смену.
- */
-
 const BCRYPT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -38,7 +28,6 @@ const seed = async () => {
     return;
   }
 
-  // Первый пользователь получает owner — он заводит остальных.
   const isFirstUser = (await prisma.user.count()) === 0;
 
   const user = await prisma.user.create({

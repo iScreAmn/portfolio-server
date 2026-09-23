@@ -2,19 +2,11 @@ import { prisma } from '../config/prisma.js';
 
 export const LEAD_STATUSES = ['new', 'in_progress', 'promotion', 'done'];
 
-/**
- * Наружу `type` уходит как `source`: админке важно откуда пришёл клиент, а не
- * какой контроллер его записал. contact — это форма контактов на сайте.
- */
 const TYPE_TO_SOURCE = { contact: 'form', calculator: 'calculator', manual: 'manual' };
 const SOURCE_TO_TYPE = { form: 'contact', calculator: 'calculator', manual: 'manual' };
 
 export const LEAD_SOURCES = Object.keys(SOURCE_TO_TYPE);
 
-/**
- * Строка БД -> клиент CRM. `ip` и `userAgent` намеренно не отдаём: в списке
- * они не нужны, а утечь наружу могут.
- */
 const toClient = (lead) => ({
   id: lead.id,
   name: lead.name,
@@ -30,13 +22,6 @@ const toClient = (lead) => ({
   updatedAt: lead.updatedAt,
 });
 
-/**
- * Заявки лежат в БД как страховка: письмо и телеграм могут не дойти оба
- * сразу (упал SMTP, отозван токен бота), и тогда обращение теряется совсем.
- *
- * Сбой записи намеренно не ломает отправку формы — посетитель не должен
- * получать ошибку из-за проблем с нашей БД, поэтому ошибка только логируется.
- */
 export const saveLead = async (data) => {
   try {
     return await prisma.lead.create({
@@ -57,14 +42,7 @@ export const saveLead = async (data) => {
   }
 };
 
-/* --------------------------------------------------------------- мини-CRM */
 
-/**
- * Список клиентов для админки.
- *
- * `counts` считается по всей таблице, а не по выборке: иначе счётчик рядом с
- * фильтром «новые» показывал бы то же число, что и сам отфильтрованный список.
- */
 export const listLeads = async ({ status, source, limit = 200 } = {}) => {
   const where = {};
   if (status) where.status = status;
@@ -73,7 +51,7 @@ export const listLeads = async ({ status, source, limit = 200 } = {}) => {
   const [rows, total, grouped] = await Promise.all([
     prisma.lead.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
       take: limit,
     }),
     prisma.lead.count({ where }),
@@ -88,7 +66,6 @@ export const listLeads = async ({ status, source, limit = 200 } = {}) => {
   return { items: rows.map(toClient), total, counts };
 };
 
-/** Клиент, заведённый руками из админки. Письма и телеграма по нему нет. */
 export const createManualLead = async ({
   name,
   company,
@@ -111,14 +88,12 @@ export const createManualLead = async ({
     }),
   );
 
-/** Меняет только переданные поля: PATCH без note не должен стирать заметку. */
 export const updateLead = async (id, { status, note, company, contactValue, message, name }) => {
   const data = {};
   if (status !== undefined) data.status = status;
   if (note !== undefined) data.note = note || null;
   if (company !== undefined) data.company = company || null;
   if (message !== undefined) data.message = message || null;
-  // Наружу поле зовётся contactValue, в базе это колонка contact.
   if (contactValue !== undefined) data.contact = contactValue;
   if (name !== undefined) data.name = name;
 
@@ -130,10 +105,35 @@ export const updateLead = async (id, { status, note, company, contactValue, mess
   try {
     return toClient(await prisma.lead.update({ where: { id }, data }));
   } catch (error) {
-    // P2025 — записи нет; контроллер отдаёт по этому 404, а не 500.
     if (error.code === 'P2025') return null;
     throw error;
   }
+};
+
+export const reorderLeads = async (ids) => {
+  const rows = await prisma.lead.findMany({
+    orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
+    select: { id: true, sortOrder: true },
+  });
+
+  const known = new Map(rows.map((row) => [row.id, row.sortOrder]));
+  const queue = [...new Set(ids)].filter((id) => known.has(id));
+  if (queue.length === 0) return false;
+
+  const moving = new Set(queue);
+  let cursor = 0;
+
+  const updates = [];
+  rows.forEach((row, index) => {
+    const id = moving.has(row.id) ? queue[cursor++] : row.id;
+    const sortOrder = index + 1;
+    if (known.get(id) !== sortOrder) {
+      updates.push(prisma.lead.update({ where: { id }, data: { sortOrder } }));
+    }
+  });
+
+  if (updates.length > 0) await prisma.$transaction(updates);
+  return true;
 };
 
 export const deleteLead = async (id) => {

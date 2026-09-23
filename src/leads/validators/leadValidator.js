@@ -1,17 +1,8 @@
 import { body, param, query } from 'express-validator';
 import { LEAD_STATUSES, LEAD_SOURCES } from '../leadRepository.js';
 
-/**
- * id в базе — uuid. Без этой проверки кривой id уходит в Prisma и вылетает
- * не как 404, а как 500.
- */
 export const leadIdRules = [param('id').isUUID().withMessage('Некорректный id')];
 
-/**
- * Клиент заводится администратором, а не посетителем, поэтому проверки мягче,
- * чем в contactValidator: без капчи, без обязательного сообщения и без
- * ограничения имени латиницей — в админку вносят и русские имена.
- */
 export const createLeadRules = [
   body('name').trim().notEmpty().withMessage('Укажите имя').isLength({ max: 100 }),
   body('company').optional({ values: 'falsy' }).trim().isLength({ max: 120 }),
@@ -36,9 +27,6 @@ export const updateLeadRules = [
   body('note').optional({ nullable: true }).isLength({ max: 2000 }),
   body('company').optional({ nullable: true }).trim().isLength({ max: 120 }),
   body('message').optional({ nullable: true }).trim().isLength({ max: 2000 }),
-  // Контакт и имя правят из карточки, поэтому пустыми их оставлять нельзя:
-  // по контакту строится ссылка для быстрого ответа, а без имени строка в
-  // списке потеряла бы смысл.
   body('contactValue')
     .optional()
     .trim()
@@ -51,6 +39,11 @@ export const updateLeadRules = [
     .notEmpty()
     .withMessage('Укажите имя')
     .isLength({ max: 100 }),
+];
+
+export const reorderLeadsRules = [
+  body('ids').isArray({ min: 1, max: 500 }).withMessage('Нужен список id'),
+  body('ids.*').isUUID().withMessage('Некорректный id'),
 ];
 
 export const listLeadsRules = [

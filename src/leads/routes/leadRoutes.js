@@ -1,8 +1,15 @@
 import express from 'express';
-import { getLeads, postLead, patchLead, removeLead } from '../controllers/leadController.js';
+import {
+  getLeads,
+  postLead,
+  patchLead,
+  patchLeadsOrder,
+  removeLead,
+} from '../controllers/leadController.js';
 import {
   createLeadRules,
   updateLeadRules,
+  reorderLeadsRules,
   listLeadsRules,
   leadIdRules,
 } from '../validators/leadValidator.js';
@@ -19,6 +26,9 @@ router.use(requireAuth);
 
 router.get('/', listLeadsRules, getLeads);
 router.post('/', createLeadRules, postLead);
+// Строго до '/:id': иначе Express разберёт 'reorder' как id и валидатор
+// завернёт запрос на isUUID.
+router.patch('/reorder', reorderLeadsRules, patchLeadsOrder);
 router.patch('/:id', updateLeadRules, patchLead);
 router.delete('/:id', leadIdRules, removeLead);
 
