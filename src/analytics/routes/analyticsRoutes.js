@@ -6,6 +6,7 @@ import {
   getDevices,
   getSessions,
   getSessionEvents,
+  deleteAllEvents,
 } from '../controllers/analyticsController.js';
 import { requireAuth } from '../../auth/middleware/requireAuth.js';
 
@@ -33,5 +34,6 @@ router.get('/summary', getSummary);
 router.get('/devices', getDevices);
 router.get('/sessions', getSessions);
 router.get('/sessions/:sessionId/events', getSessionEvents);
+router.delete('/', deleteAllEvents);
 
 export default router;

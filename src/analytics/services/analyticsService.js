@@ -79,3 +79,14 @@ export const getSessionEvents = async (sessionId, limit) => {
   if (!events.length && !(await repo.sessionExists(sessionId))) return null;
   return events;
 };
+
+/**
+ * Полная очистка таблицы событий. Только для dev — контроллер проверяет
+ * NODE_ENV до вызова, здесь дублируем проверку на случай прямого импорта.
+ */
+export const deleteAll = async () => {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('deleteAll запрещён в production');
+  }
+  return repo.deleteAll();
+};

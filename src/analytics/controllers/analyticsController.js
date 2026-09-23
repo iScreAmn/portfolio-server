@@ -112,3 +112,17 @@ export const getSessionEvents = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to load session events' });
   }
 };
+
+/** Только для dev: полная очистка таблицы событий, чтобы не тащить тестовые переходы в отчёты. */
+export const deleteAllEvents = async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ success: false, message: 'Недоступно в production' });
+  }
+  try {
+    const count = await analyticsService.deleteAll();
+    return res.json({ success: true, data: { deleted: count } });
+  } catch (error) {
+    console.error('[analytics] delete all error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete events' });
+  }
+};

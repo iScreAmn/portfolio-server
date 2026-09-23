@@ -14,6 +14,11 @@ export const insertEvents = async (events) => {
   return count;
 };
 
+export const deleteAll = async () => {
+  const { count } = await prisma.analyticsEvent.deleteMany();
+  return count;
+};
+
 export const getTotals = async (from, to) => {
   const [row] = await prisma.$queryRaw`
     SELECT

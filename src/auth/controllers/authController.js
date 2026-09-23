@@ -95,7 +95,16 @@ export const logout = async (req, res) => {
   return res.json({ success: true });
 };
 
-export const me = (req, res) => res.json({ success: true, data: { user: req.user } });
+export const me = (req, res) =>
+  res.json({
+    success: true,
+    data: {
+      user: req.user,
+      // Фронту нужно знать режим бэкенда, а не свой собственный: аналитика
+      // хранится на сервере, и именно его NODE_ENV решает, можно ли её чистить.
+      isDev: process.env.NODE_ENV !== 'production',
+    },
+  });
 
 export const changePassword = async (req, res) => {
   try {
