@@ -20,6 +20,20 @@ export const sendContactTelegramNotification = async (data) => {
   return sendTelegramMessage(html);
 };
 
+export const sendReviewTelegramNotification = async (review) => {
+  const html = linesToHtml([
+    `<b>⭐ Новый отзыв ждёт подтверждения</b>`,
+    ``,
+    `<b>Имя:</b> ${escapeHtml(review.name)}`,
+    review.company ? `<b>Компания:</b> ${escapeHtml(review.company)}` : '',
+    `<b>Отзыв:</b> ${escapeHtml(review.text)}`,
+    ``,
+    `Подтвердить или удалить — на дашборде админки.`
+  ]);
+
+  return sendTelegramMessage(html);
+};
+
 const translateValues = {
   projectType: {
     landing: 'Лендинг',

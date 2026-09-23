@@ -10,6 +10,7 @@ import calculatorRoutes from './src/calculator/routes/calculatorRoutes.js';
 import analyticsRoutes from './src/analytics/routes/analyticsRoutes.js';
 import authRoutes from './src/auth/routes/authRoutes.js';
 import leadRoutes from './src/leads/routes/leadRoutes.js';
+import reviewRoutes from './src/reviews/routes/reviewRoutes.js';
 
 dotenv.config();
 
@@ -62,6 +63,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/leads', leadRoutes);
+app.use('/api/reviews', reviewRoutes);
 app.use('/api/calculator', calculatorRoutes);
 
 /** Healthcheck для docker compose: проверяет и процесс, и связь с БД. */
