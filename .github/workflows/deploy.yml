@@ -3,7 +3,6 @@ name: Deploy API
 on:
   push:
     branches: [main]
-  # Ручной перезапуск без коммита.
   workflow_dispatch:
 
 env:
@@ -32,8 +31,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Имя пакета в GHCR должно быть в нижнем регистре, а owner в GitHub
-      # может быть с заглавными (iScreAmn) — приводим явно.
       - name: Resolve image name
         id: meta
         run: echo "tags=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
@@ -61,20 +58,11 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_SSH_PORT || 22 }}
-          script_stop: true
           script: |
+            set -euo pipefail
             cd /opt/portfolio
-
-            # Сервер ничего не собирает — только тянет готовый образ.
             docker compose pull api
-
-            # База должна быть поднята до миграций.
             docker compose up -d db
-
-            # Миграции накатываются отдельным одноразовым контейнером из
-            # свежего образа: если они упадут, старый api продолжает работать.
             docker compose run --rm api npx prisma migrate deploy
-
             docker compose up -d api
-
             docker image prune -f
