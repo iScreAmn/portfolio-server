@@ -1,7 +1,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { calculatorValidationRules } from '../validators/calculatorValidator.js';
-import { handleCalculator } from '../controllers/calculatorController.js';
+import { packageValidationRules } from '../validators/packageValidator.js';
+import { handlePackageRequest } from '../controllers/packageController.js';
 
 const router = express.Router();
 
@@ -18,6 +18,6 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 
-router.post('/', limiter, calculatorValidationRules, handleCalculator);
+router.post('/', limiter, packageValidationRules, handlePackageRequest);
 
 export default router;
