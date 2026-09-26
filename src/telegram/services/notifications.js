@@ -5,16 +5,16 @@ const { escapeHtml } = telegram;
 const linesToHtml = (lines) => lines.filter(Boolean).join('\n');
 
 export const sendContactTelegramNotification = async (data) => {
-  const contactLabel = data.contactMethod === 'Email' ? 'Email' : 'Phone';
   const html = linesToHtml([
-    `<b>New Contact Form Submission (Portfolio)</b>`,
+    `<b>✉️ Новое сообщение со страницы контактов</b>`,
     ``,
-    `<b>Name:</b> ${escapeHtml(data.name)}`,
-    `<b>Preferred contact:</b> ${escapeHtml(data.contactMethod)}`,
-    `<b>${escapeHtml(contactLabel)}:</b> ${escapeHtml(data.contactValue)}`,
-    `<b>Message:</b> ${escapeHtml(data.message || '—')}`,
+    `<b>👤 Имя:</b> ${escapeHtml(data.name)}`,
+    `<b>📞 ${escapeHtml(data.contactMethod)}:</b> ${escapeHtml(data.contactValue)}`,
     ``,
-    `<b>Submitted at:</b> ${escapeHtml(data.submitted_at)}`
+    `<b>💬 Сообщение:</b>`,
+    escapeHtml(data.message || '—'),
+    ``,
+    `<b>Отправлено:</b> ${escapeHtml(data.submitted_at)}`
   ]);
 
   return sendTelegramMessage(html);

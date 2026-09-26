@@ -7,6 +7,21 @@ import { saveLead } from '../../leads/leadRepository.js';
 /** Простейшая проверка «свой-чужой» из формы. Ответ задаётся в env. */
 const getCaptchaAnswer = () => String(process.env.CONTACT_CAPTCHA_ANSWER || '').trim();
 
+const isEmailConfigured = () =>
+  Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
+
+const METHOD_LABELS = {
+  telegram: 'Telegram',
+  whatsapp: 'WhatsApp',
+  email: 'Email'
+};
+
+const normalizeContact = (method, value) => {
+  const raw = value.trim();
+  if (method === 'telegram' && /^[A-Za-z][\w]{3,31}$/.test(raw)) return `@${raw}`;
+  return raw;
+};
+
 export const handleContact = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -19,13 +34,6 @@ export const handleContact = async (req, res) => {
         success: false,
         message: 'Validation failed',
         errors: errList
-      });
-    }
-
-    if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      return res.status(500).json({
-        success: false,
-        message: 'Email configuration is missing. Please contact administrator.'
       });
     }
 
@@ -55,8 +63,9 @@ export const handleContact = async (req, res) => {
 
     const contactData = {
       name: name.trim(),
-      contactMethod,
-      contactValue: (contactValue ?? '').trim(),
+      // Валидатор уже привёл способ связи к id в нижнем регистре.
+      contactMethod: METHOD_LABELS[contactMethod],
+      contactValue: normalizeContact(contactMethod, contactValue ?? ''),
       message: (message ?? '').trim(),
       submitted_at: new Date().toLocaleString('en-GB', {
         timeZone: 'UTC',
@@ -81,8 +90,10 @@ export const handleContact = async (req, res) => {
       userAgent: req.get('user-agent')
     });
 
+    // Почта — запасной канал: без SMTP-настроек заявка всё равно уходит
+    // в CRM и телеграм.
     const [emailResult, telegramResult] = await Promise.allSettled([
-      sendContactEmail(contactData),
+      isEmailConfigured() ? sendContactEmail(contactData) : Promise.resolve({ skipped: true }),
       sendContactTelegramNotification(contactData)
     ]);
 
@@ -103,7 +114,8 @@ export const handleContact = async (req, res) => {
     // Выключенный телеграм резолвится со skipped — это не доставка.
     const telegramDelivered =
       telegramResult.status === 'fulfilled' && telegramResult.value?.skipped !== true;
-    const emailDelivered = emailResult.status === 'fulfilled';
+    const emailDelivered =
+      emailResult.status === 'fulfilled' && emailResult.value?.skipped !== true;
 
     // Заявка сохранена в БД — значит, она не потеряна, даже если ни письмо,
     // ни телеграм не ушли. Ошибку отдаём только когда пропало всё сразу.
