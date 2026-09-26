@@ -116,3 +116,20 @@ export const sendCalculatorTelegramNotification = async (data) => {
 
   return sendTelegramMessage(html);
 };
+
+export const sendPackageTelegramNotification = async (data) => {
+  const html = linesToHtml([
+    `<b>📦 Заявка на пакет со страницы услуг</b>`,
+    ``,
+    `<b>👤 Имя:</b> ${escapeHtml(data.name)}`,
+    `<b>📞 ${escapeHtml(data.contactMethod)}:</b> ${escapeHtml(data.contact)}`,
+    ``,
+    `<b>Пакет:</b> ${escapeHtml(data.packageName)}`,
+    data.packagePrice ? `<b>Цена:</b> ${escapeHtml(data.packagePrice)}` : '',
+    `<b>Поддержка после запуска:</b> ${data.withSupport ? 'Нужна' : 'Не нужна'}`,
+    ``,
+    `<b>Отправлено:</b> ${escapeHtml(data.submitted_at)}`
+  ]);
+
+  return sendTelegramMessage(html);
+};

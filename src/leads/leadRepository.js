@@ -2,8 +2,18 @@ import { prisma } from '../config/prisma.js';
 
 export const LEAD_STATUSES = ['new', 'in_progress', 'promotion', 'done'];
 
-const TYPE_TO_SOURCE = { contact: 'form', calculator: 'calculator', manual: 'manual' };
-const SOURCE_TO_TYPE = { form: 'contact', calculator: 'calculator', manual: 'manual' };
+const TYPE_TO_SOURCE = {
+  contact: 'form',
+  calculator: 'calculator',
+  package: 'package',
+  manual: 'manual',
+};
+const SOURCE_TO_TYPE = {
+  form: 'contact',
+  calculator: 'calculator',
+  package: 'package',
+  manual: 'manual',
+};
 
 export const LEAD_SOURCES = Object.keys(SOURCE_TO_TYPE);
 
