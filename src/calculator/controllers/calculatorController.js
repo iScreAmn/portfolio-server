@@ -3,6 +3,21 @@ import { sendCalculatorEmail } from '../services/calculatorService.js';
 import { sendCalculatorTelegramNotification } from '../../telegram/services/notifications.js';
 import { saveLead } from '../../leads/leadRepository.js';
 
+const METHOD_LABELS = {
+  telegram: 'Telegram',
+  whatsapp: 'WhatsApp',
+  email: 'Email'
+};
+
+const normalizeContact = (method, value) => {
+  const raw = value.trim();
+  if (method === 'telegram' && /^[A-Za-z][\w]{3,31}$/.test(raw)) return `@${raw}`;
+  return raw;
+};
+
+const isEmailConfigured = () =>
+  Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
+
 export const handleCalculator = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -18,39 +33,28 @@ export const handleCalculator = async (req, res) => {
       });
     }
 
-    if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      return res.status(500).json({
-        success: false,
-        message: 'Email configuration is missing. Please contact administrator.'
-      });
-    }
-
     const {
       name,
+      contactMethod,
       contact,
       message,
       projectType,
       goals,
-      scope,
       designApproach,
       features,
-      content,
-      timeline,
-      support
+      content
     } = req.body;
 
     const calculatorData = {
       name: name.trim(),
-      contact: contact.trim(),
+      contactMethod: METHOD_LABELS[contactMethod],
+      contact: normalizeContact(contactMethod, contact),
       message: (message ?? '').trim(),
       projectType: projectType || '',
       goals: goals || [],
-      scope: scope || '',
       designApproach: designApproach || '',
       features: features || [],
       content: content || '',
-      timeline: timeline || '',
-      support: support || '',
       submitted_at: new Date().toLocaleString('en-GB', {
         timeZone: 'UTC',
         year: 'numeric',
@@ -62,29 +66,28 @@ export const handleCalculator = async (req, res) => {
       })
     };
 
-    // Сначала в БД, потом доставка: если оба канала упадут, заявка всё равно
-    // останется в таблице leads.
+    // Сначала в БД, потом доставка: если все каналы упадут, заявка всё равно
+    // останется в таблице leads и будет видна в админке.
     const savedLead = await saveLead({
       type: 'calculator',
       name: calculatorData.name,
       contact: calculatorData.contact,
+      method: calculatorData.contactMethod,
       message: calculatorData.message,
       payload: {
         projectType: calculatorData.projectType,
         goals: calculatorData.goals,
-        scope: calculatorData.scope,
         designApproach: calculatorData.designApproach,
         features: calculatorData.features,
-        content: calculatorData.content,
-        timeline: calculatorData.timeline,
-        support: calculatorData.support
+        content: calculatorData.content
       },
       ip: req.ip,
       userAgent: req.get('user-agent')
     });
 
+    // Без SMTP письмо просто не шлём — заявка всё равно уходит в телеграм и админку.
     const [emailResult, telegramResult] = await Promise.allSettled([
-      sendCalculatorEmail(calculatorData),
+      isEmailConfigured() ? sendCalculatorEmail(calculatorData) : Promise.resolve({ skipped: true }),
       sendCalculatorTelegramNotification(calculatorData)
     ]);
 
@@ -105,12 +108,12 @@ export const handleCalculator = async (req, res) => {
     // Выключенный телеграм резолвится со skipped — это не доставка.
     const telegramDelivered =
       telegramResult.status === 'fulfilled' && telegramResult.value?.skipped !== true;
-    const emailDelivered = emailResult.status === 'fulfilled';
+    const emailDelivered =
+      emailResult.status === 'fulfilled' && emailResult.value?.skipped !== true;
 
     // Заявка сохранена в БД — значит, она не потеряна, даже если ни письмо,
     // ни телеграм не ушли. Ошибку отдаём только когда пропало всё сразу.
-    const deliveryOk = emailDelivered || telegramDelivered || Boolean(savedLead);
-    if (!deliveryOk) {
+    if (!savedLead && !telegramDelivered && !emailDelivered) {
       return res.status(500).json({
         success: false,
         message: 'Failed to send message. Please try again later.'
@@ -123,18 +126,6 @@ export const handleCalculator = async (req, res) => {
     });
   } catch (error) {
     console.error('Calculator error:', error);
-    if (error.code === 'EAUTH') {
-      return res.status(500).json({
-        success: false,
-        message: 'Email authentication failed. Please check credentials.'
-      });
-    }
-    if (error.code === 'ECONNECTION') {
-      return res.status(500).json({
-        success: false,
-        message: 'Email server connection failed. Please try again later.'
-      });
-    }
     res.status(500).json({
       success: false,
       message: 'Failed to send message. Please try again later.'
