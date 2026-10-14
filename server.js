@@ -3,7 +3,6 @@ import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
-
 import { pingDB, disconnectDB } from './src/config/prisma.js';
 import contactRoutes from './src/contacts/routes/contactRoutes.js';
 import calculatorRoutes from './src/calculator/routes/calculatorRoutes.js';
@@ -12,6 +11,10 @@ import analyticsRoutes from './src/analytics/routes/analyticsRoutes.js';
 import authRoutes from './src/auth/routes/authRoutes.js';
 import leadRoutes from './src/leads/routes/leadRoutes.js';
 import reviewRoutes from './src/reviews/routes/reviewRoutes.js';
+import {
+  getTelegramHealthDetails,
+  verifyTelegramConfig,
+} from './src/telegram/services/telegramClient.js';
 
 dotenv.config();
 
@@ -22,7 +25,6 @@ const isProduction = process.env.NODE_ENV === 'production';
 app.set('trust proxy', 1);
 
 const DEV_ORIGINS = ['http://localhost:3333', 'http://127.0.0.1:3333'];
-
 const allowedOrigins = new Set([
   ...String(process.env.CORS_ORIGIN || '')
     .split(',')
@@ -59,7 +61,12 @@ app.use('/api/packages', packageRoutes);
 app.get('/api/health', async (req, res) => {
   try {
     await pingDB();
-    res.json({ status: 'ok', db: 'up', timestamp: new Date().toISOString() });
+    res.json({
+      status: 'ok',
+      db: 'up',
+      telegram: getTelegramHealthDetails(),
+      timestamp: new Date().toISOString(),
+    });
   } catch (error) {
     console.error('[health] БД недоступна:', error.message || error);
     res.status(503).json({ status: 'error', db: 'down' });
@@ -80,6 +87,14 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  const telegram = getTelegramHealthDetails();
+  if (!telegram.enabled) {
+    console.warn('[telegram] выключен: нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID', telegram);
+  } else {
+    verifyTelegramConfig().then((ok) => {
+      console.log(`[telegram] ${ok ? 'бот доступен' : 'бот НЕ доступен'}`, telegram);
+    });
+  }
 });
 
 const shutdown = (signal) => async () => {
