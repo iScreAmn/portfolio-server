@@ -67,6 +67,11 @@ export const calculatorValidationRules = [
     .isArray()
     .withMessage('Features must be an array'),
 
+  body('source')
+    .optional()
+    .isIn(['cta-modal'])
+    .withMessage('Invalid source'),
+
   body('content')
     .optional()
     .trim()

@@ -42,7 +42,8 @@ export const handleCalculator = async (req, res) => {
       goals,
       designApproach,
       features,
-      content
+      content,
+      source
     } = req.body;
 
     const calculatorData = {
@@ -55,6 +56,7 @@ export const handleCalculator = async (req, res) => {
       designApproach: designApproach || '',
       features: features || [],
       content: content || '',
+      isCallback: source === 'cta-modal',
       submitted_at: new Date().toLocaleString('en-GB', {
         timeZone: 'UTC',
         year: 'numeric',
@@ -66,8 +68,6 @@ export const handleCalculator = async (req, res) => {
       })
     };
 
-    // Сначала в БД, потом доставка: если все каналы упадут, заявка всё равно
-    // останется в таблице leads и будет видна в админке.
     const savedLead = await saveLead({
       type: 'calculator',
       name: calculatorData.name,
@@ -85,7 +85,6 @@ export const handleCalculator = async (req, res) => {
       userAgent: req.get('user-agent')
     });
 
-    // Без SMTP письмо просто не шлём — заявка всё равно уходит в телеграм и админку.
     const [emailResult, telegramResult] = await Promise.allSettled([
       isEmailConfigured() ? sendCalculatorEmail(calculatorData) : Promise.resolve({ skipped: true }),
       sendCalculatorTelegramNotification(calculatorData)
@@ -105,14 +104,11 @@ export const handleCalculator = async (req, res) => {
       console.error('Calculator email failed:', emailResult.reason?.message || emailResult.reason);
     }
 
-    // Выключенный телеграм резолвится со skipped — это не доставка.
     const telegramDelivered =
       telegramResult.status === 'fulfilled' && telegramResult.value?.skipped !== true;
     const emailDelivered =
       emailResult.status === 'fulfilled' && emailResult.value?.skipped !== true;
 
-    // Заявка сохранена в БД — значит, она не потеряна, даже если ни письмо,
-    // ни телеграм не ушли. Ошибку отдаём только когда пропало всё сразу.
     if (!savedLead && !telegramDelivered && !emailDelivered) {
       return res.status(500).json({
         success: false,

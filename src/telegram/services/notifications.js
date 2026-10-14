@@ -74,21 +74,26 @@ export const sendCalculatorTelegramNotification = async (data) => {
   const designApproachText = translateValues.designApproach[data.designApproach] || data.designApproach || '—';
   const featuresText = (data.features || []).map(f => translateValues.features[f] || f).join(', ') || '—';
   const contentText = translateValues.content[data.content] || data.content || '—';
+  const projectLines = data.isCallback
+    ? []
+    : [
+        `<b>📋 Параметры проекта:</b>`,
+        `<b>Тип:</b> ${escapeHtml(projectTypeText)}`,
+        `<b>Цели:</b> ${escapeHtml(goalsText)}`,
+        `<b>Дизайн:</b> ${escapeHtml(designApproachText)}`,
+        `<b>Функционал:</b> ${escapeHtml(featuresText)}`,
+        `<b>Контент:</b> ${escapeHtml(contentText)}`,
+        ``
+      ];
 
   const html = linesToHtml([
-    `<b>🧮 Новый запрос из калькулятора</b>`,
+    data.isCallback ? `<b>🤙 Запрос на обратный звонок</b>` : `<b>🧮 Новый запрос из калькулятора</b>`,
     ``,
     `<b>👤 Имя:</b> ${escapeHtml(data.name)}`,
     `<b>📞 ${escapeHtml(data.contactMethod || 'Контакт')}:</b> ${escapeHtml(data.contact)}`,
     data.message ? `<b>💬 Сообщение:</b> ${escapeHtml(data.message)}` : '',
     ``,
-    `<b>📋 Параметры проекта:</b>`,
-    `<b>Тип:</b> ${escapeHtml(projectTypeText)}`,
-    `<b>Цели:</b> ${escapeHtml(goalsText)}`,
-    `<b>Дизайн:</b> ${escapeHtml(designApproachText)}`,
-    `<b>Функционал:</b> ${escapeHtml(featuresText)}`,
-    `<b>Контент:</b> ${escapeHtml(contentText)}`,
-    ``,
+    ...projectLines,
     `<b>Отправлено:</b> ${escapeHtml(data.submitted_at)}`
   ]);
 
