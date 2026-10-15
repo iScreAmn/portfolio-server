@@ -15,13 +15,15 @@ const parseThreadId = (value) => {
 
 export const getTelegramConfig = () => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatIds = parseChatIds(process.env.TELEGRAM_CHAT_ID);
+  const chatIds = parseChatIds(process.env.TELEGRAM_CHATS_ID);
   const threadId = parseThreadId(process.env.TELEGRAM_THREAD_ID);
+  const logsThreadId = parseThreadId(process.env.TELEGRAM_LOGS_THREAD_ID);
 
   return {
     token,
     chatIds,
-    threadId
+    threadId,
+    logsThreadId
   };
 };
 

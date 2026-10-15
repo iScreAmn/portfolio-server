@@ -15,8 +15,14 @@ import {
   getTelegramHealthDetails,
   verifyTelegramConfig,
 } from './src/telegram/services/telegramClient.js';
+import {
+  flushTelegramLogs,
+  installTelegramLogForwarder,
+  logToTelegram,
+} from './src/telegram/services/logForwarder.js';
 
 dotenv.config();
+installTelegramLogForwarder();
 
 const app = express();
 const PORT = Number(process.env.PORT || 5050);
@@ -89,18 +95,21 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   const telegram = getTelegramHealthDetails();
   if (!telegram.enabled) {
-    console.warn('[telegram] выключен: нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID', telegram);
+    console.warn('[telegram] выключен: нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHATS_ID', telegram);
   } else {
     verifyTelegramConfig().then((ok) => {
       console.log(`[telegram] ${ok ? 'бот доступен' : 'бот НЕ доступен'}`, telegram);
     });
   }
+  logToTelegram('info', `Сервер запущен на порту ${PORT}`);
 });
 
 const shutdown = (signal) => async () => {
   console.log(`${signal} received, shutting down`);
+  logToTelegram('info', `${signal}: сервер останавливается`);
   server.close(async () => {
     await disconnectDB();
+    await flushTelegramLogs();
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 10000).unref();
@@ -108,5 +117,15 @@ const shutdown = (signal) => async () => {
 
 process.on('SIGTERM', shutdown('SIGTERM'));
 process.on('SIGINT', shutdown('SIGINT'));
+
+// Падаем как и раньше, но сначала успеваем отправить причину в Telegram.
+const crash = (label) => async (error) => {
+  console.error(`[${label}]`, error);
+  await flushTelegramLogs();
+  process.exit(1);
+};
+
+process.on('uncaughtException', crash('uncaughtException'));
+process.on('unhandledRejection', crash('unhandledRejection'));
 
 export default app;

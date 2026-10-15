@@ -34,7 +34,7 @@ export const sendTelegramMessage = async (htmlText, options = {}) => {
   if (!isTelegramEnabled()) {
     return {
       skipped: true,
-      reason: 'Telegram is disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)'
+      reason: 'Telegram is disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHATS_ID)'
     };
   }
 
@@ -59,7 +59,7 @@ export const sendTelegramMessage = async (htmlText, options = {}) => {
   };
 
   const toPlainText = (t) => {
-    const noTags = String(t ?? '').replace(/<\/?b>/g, '');
+    const noTags = String(t ?? '').replace(/<\/?(b|i|pre|code)>/g, '');
     return noTags
       .replaceAll('&amp;', '&')
       .replaceAll('&lt;', '<')
@@ -126,6 +126,7 @@ export const getTelegramHealthDetails = () => {
     enabled: isTelegramEnabled(),
     hasToken: Boolean(cfg.token),
     chatIdsCount: cfg.chatIds.length,
-    threadId: cfg.threadId ?? null
+    threadId: cfg.threadId ?? null,
+    logsThreadId: cfg.logsThreadId ?? null
   };
 };
