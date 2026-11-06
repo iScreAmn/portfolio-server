@@ -11,6 +11,7 @@ import analyticsRoutes from './src/analytics/routes/analyticsRoutes.js';
 import authRoutes from './src/auth/routes/authRoutes.js';
 import leadRoutes from './src/leads/routes/leadRoutes.js';
 import reviewRoutes from './src/reviews/routes/reviewRoutes.js';
+import contentRoutes from './src/content/routes/contentRoutes.js';
 import {
   getTelegramHealthDetails,
   verifyTelegramConfig,
@@ -46,13 +47,16 @@ app.use(
       callback(null, allowedOrigins.has(origin));
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type'],
   }),
 );
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cookieParser());
+// Блоки контента везут картинку в data URL, им нужен лимит побольше. Парсер
+// стоит раньше общего: тот видит уже разобранное тело и пропускает запрос.
+app.use('/api/content', express.json({ limit: '1mb' }));
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: true, limit: '256kb' }));
 
@@ -61,6 +65,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/leads', leadRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/content', contentRoutes);
 app.use('/api/calculator', calculatorRoutes);
 app.use('/api/packages', packageRoutes);
 

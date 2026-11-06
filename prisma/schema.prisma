@@ -164,3 +164,15 @@ model Review {
   @@index([status, createdAt])
   @@map("reviews")
 }
+
+
+// Редактируемые из админки блоки сайта. Ключ — имя блока ("about-hero"),
+// data — его содержимое целиком: у каждого блока своя форма, и заводить под
+// каждый отдельную таблицу ради пары текстов незачем.
+model SiteContent {
+  key       String   @id
+  data      Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("site_content")
+}
