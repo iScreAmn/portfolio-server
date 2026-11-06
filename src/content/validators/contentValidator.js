@@ -1,5 +1,6 @@
 import { body, param } from 'express-validator';
 
+// Языки сайта — те же, что в src/i18n/config.js фронтенда.
 const LOCALES = ['en', 'ru'];
 
 // Тело запроса упирается в client_max_body_size 1m у nginx перед API,
@@ -60,7 +61,7 @@ export const SECTIONS = {
   'about-hero': {
     rules: aboutHeroRules,
     // Из тела берутся только эти поля: всё прочее, что пришлёт клиент, мимо.
-    pick: ({ image, links, en, ru }) => ({
+    pick: ({ image, links, ...texts }) => ({
       image,
       links: {
         cv: links.cv,
@@ -69,21 +70,21 @@ export const SECTIONS = {
         instagram: links.instagram,
       },
       ...Object.fromEntries(
-        [
-          ['en', en],
-          ['ru', ru],
-        ].map(([locale, value]) => [
-          locale,
-          {
-            eyebrow: value.eyebrow,
-            title: value.title,
-            lead: value.lead,
-            subtitle: value.subtitle,
-            subtitleSecondary: value.subtitleSecondary,
-            posterAlt: value.posterAlt,
-            cvText: value.cvText,
-          },
-        ]),
+        LOCALES.map((locale) => {
+          const value = texts[locale];
+          return [
+            locale,
+            {
+              eyebrow: value.eyebrow,
+              title: value.title,
+              lead: value.lead,
+              subtitle: value.subtitle,
+              subtitleSecondary: value.subtitleSecondary,
+              posterAlt: value.posterAlt,
+              cvText: value.cvText,
+            },
+          ];
+        }),
       ),
     }),
   },
